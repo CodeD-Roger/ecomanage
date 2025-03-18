@@ -24,6 +24,6 @@ Il effectue les actions suivantes :
 
 ### 1️⃣ Cloner le dépôt
 ```bash
-git clone https://github.com/votre-utilisateur/ecomanage.git
+git clone https://github.com/CodeD-Roger/ecomanage.git
 cd ecomanage"
 
