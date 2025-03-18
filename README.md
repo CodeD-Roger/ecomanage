@@ -26,5 +26,6 @@ Il effectue les actions suivantes :
 ```bash
 git clone https://github.com/CodeD-Roger/ecomanage.git
 cd ecomanage
+chmod +x ecomanage.sh
 sudo ./ecomanage.sh
 
