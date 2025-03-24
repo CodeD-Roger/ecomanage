@@ -14,8 +14,7 @@ Il effectue les actions suivantes :
 ## 🎯 Fonctionnalités principales
 
 - **📦 Installation automatique d'ERPNext (via Docker).**
-- **🔐 Sécurisation du serveur SSH avec clé RSA.**
-- **🛡 Configuration d'un pare-feu (UFW) pour sécuriser l'accès SSH.**
+- **🔐 Sécurisation du serveur SSH avec clé  Ed25519.**
 - **🔑 Génération et sauvegarde de la clé SSH pour un accès distant sécurisé.**
 
 ---
