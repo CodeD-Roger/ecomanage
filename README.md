@@ -6,7 +6,6 @@ Il effectue les actions suivantes :
 
 - **📦 Installation d'ERPNext via Docker.**
 - **🔒 Configuration de SSH pour l'authentification par clé.**
-- **🛡 Sécurisation du serveur avec UFW et ouverture du port 22.**
 - **🔑 Génération d’une clé SSH pour un accès sécurisé.**
 
 ---
