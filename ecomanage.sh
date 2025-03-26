@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script ecomanage.sh
+# Script ecomanage.sh - Version améliorée
 
 # Fonction pour afficher les messages avec des couleurs
 print_message() {
@@ -42,7 +42,7 @@ apt update -qq && apt upgrade -y -qq >> $LOG_FILE 2>&1
 
 # Vérification et installation des dépendances
 print_message "info" "Installation des dépendances nécessaires..."
-apt install -y curl git openssh-server >> $LOG_FILE 2>&1
+apt install -y curl git openssh-server jq >> $LOG_FILE 2>&1
 
 # Configuration de SSH
 print_message "info" "Configuration du serveur SSH pour authentification par clé uniquement..."
@@ -147,10 +147,119 @@ fi
 
 # Installation d'ERPNext
 cd /opt/frappe_docker
+print_message "info" "Lancement des conteneurs Docker pour ERPNext..."
 docker compose -f pwd.yml up -d >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
-    print_message "error" "L'installation d'ERPNext a échoué. Veuillez vérifier le fichier log: $LOG_FILE"
+    print_message "error" "Le lancement des conteneurs ERPNext a échoué. Veuillez vérifier le fichier log: $LOG_FILE"
+    exit 1
+fi
+
+# Vérification que les conteneurs sont bien lancés
+print_message "info" "Vérification des conteneurs ERPNext..."
+sleep 10  # Attendre que les conteneurs démarrent
+CONTAINERS_RUNNING=$(docker ps --format '{{.Names}}' | grep -c "frappe")
+if [ "$CONTAINERS_RUNNING" -lt 3 ]; then
+    print_message "warning" "Certains conteneurs ERPNext ne semblent pas être en cours d'exécution. Tentative de relance..."
+    docker compose -f pwd.yml down >> $LOG_FILE 2>&1
+    docker compose -f pwd.yml up -d >> $LOG_FILE 2>&1
+    sleep 15
+    CONTAINERS_RUNNING=$(docker ps --format '{{.Names}}' | grep -c "frappe")
+    if [ "$CONTAINERS_RUNNING" -lt 3 ]; then
+        print_message "error" "Impossible de lancer tous les conteneurs ERPNext. Veuillez vérifier le fichier log: $LOG_FILE"
+        exit 1
+    fi
+fi
+
+# Définition du mot de passe MySQL
+print_message "info" "Configuration du mot de passe MySQL..."
+MYSQL_ROOT_PASSWORD="admin"
+echo "Mot de passe MySQL root défini: $MYSQL_ROOT_PASSWORD" >> $LOG_FILE
+
+# Attendre que le conteneur backend soit prêt
+print_message "info" "Attente de l'initialisation des conteneurs..."
+BACKEND_CONTAINER=$(docker ps --format '{{.Names}}' | grep "backend")
+if [ -z "$BACKEND_CONTAINER" ]; then
+    print_message "error" "Conteneur backend non trouvé"
+    exit 1
+fi
+
+# Attendre que le système de fichiers soit prêt
+RETRY_COUNT=0
+MAX_RETRIES=30
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if docker exec $BACKEND_CONTAINER test -d /home/frappe/frappe-bench/sites; then
+        break
+    fi
+    print_message "info" "En attente de l'initialisation du système de fichiers... ($RETRY_COUNT/$MAX_RETRIES)"
+    sleep 10
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+done
+
+if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+    print_message "error" "Délai d'attente dépassé pour l'initialisation du système de fichiers"
+    exit 1
+fi
+
+# Injection du mot de passe MySQL dans common_site_config.json
+print_message "info" "Injection du mot de passe MySQL dans la configuration..."
+CONFIG_FILE="/home/frappe/frappe-bench/sites/common_site_config.json"
+
+# Vérifier si le fichier existe dans le conteneur
+if ! docker exec $BACKEND_CONTAINER test -f $CONFIG_FILE; then
+    print_message "warning" "Fichier de configuration non trouvé, création..."
+    docker exec $BACKEND_CONTAINER bash -c "echo '{}' > $CONFIG_FILE"
+fi
+
+# Injecter le mot de passe MySQL
+docker exec $BACKEND_CONTAINER bash -c "cat $CONFIG_FILE | jq '. + {\"db_password\": \"$MYSQL_ROOT_PASSWORD\"}' > /tmp/config.json && mv /tmp/config.json $CONFIG_FILE" >> $LOG_FILE 2>&1
+
+if [ $? -ne 0 ]; then
+    print_message "error" "Échec de l'injection du mot de passe MySQL. Veuillez vérifier le fichier log: $LOG_FILE"
+    exit 1
+fi
+
+print_message "info" "Mot de passe MySQL injecté avec succès"
+
+# Création automatique du site ERPNext
+print_message "info" "Création du site ERPNext..."
+SITE_NAME="site1.local"
+
+# Exécution de la commande bench new-site
+print_message "info" "Création du site $SITE_NAME..."
+docker exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench new-site $SITE_NAME --admin-password admin --mariadb-root-password $MYSQL_ROOT_PASSWORD --install-app erpnext" >> $LOG_FILE 2>&1
+
+if [ $? -ne 0 ]; then
+    print_message "error" "Échec de la création du site ERPNext. Veuillez vérifier le fichier log: $LOG_FILE"
+    # Tentative de résolution des problèmes courants
+    print_message "warning" "Tentative de résolution des problèmes..."
+    
+    # Vérifier si le site existe déjà
+    if docker exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME list-apps" >> $LOG_FILE 2>&1; then
+        print_message "warning" "Le site semble déjà exister. Tentative d'installation de l'application erpnext..."
+        docker exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app erpnext" >> $LOG_FILE 2>&1
+    else
+        print_message "error" "Impossible de créer ou de configurer le site ERPNext"
+        exit 1
+    fi
+fi
+
+# Configuration du site par défaut
+print_message "info" "Configuration du site par défaut..."
+docker exec $BACKEND_CONTAINER bash -c "echo \"$SITE_NAME\" > /home/frappe/frappe-bench/sites/currentsite.txt" >> $LOG_FILE 2>&1
+
+if [ $? -ne 0 ]; then
+    print_message "error" "Échec de la configuration du site par défaut. Veuillez vérifier le fichier log: $LOG_FILE"
+    exit 1
+fi
+
+# Redémarrage des services Docker
+print_message "info" "Redémarrage des services Docker..."
+cd /opt/frappe_docker
+docker compose -f pwd.yml restart >> $LOG_FILE 2>&1
+
+if [ $? -ne 0 ]; then
+    print_message "error" "Échec du redémarrage des services Docker. Veuillez vérifier le fichier log: $LOG_FILE"
     exit 1
 fi
 
@@ -202,6 +311,22 @@ EOF
 chmod +x "/home/$current_user/add_ssh_key.sh"
 chown $current_user:$current_user "/home/$current_user/add_ssh_key.sh"
 
+# Attendre que le site soit complètement prêt
+print_message "info" "Attente de la finalisation du site ERPNext..."
+sleep 20
+
+# Vérification finale
+SERVER_IP=$(hostname -I | awk '{print $1}')
+print_message "info" "Vérification de l'accès au site ERPNext..."
+curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:8080 > /tmp/http_status
+HTTP_STATUS=$(cat /tmp/http_status)
+
+if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "302" || "$HTTP_STATUS" == "301" ]]; then
+    print_message "info" "Site ERPNext accessible avec succès!"
+else
+    print_message "warning" "Le site ERPNext n'est pas encore accessible (HTTP status: $HTTP_STATUS). Il pourrait nécessiter plus de temps pour s'initialiser."
+fi
+
 # Affichage des informations finales
 print_message "info" "Installation d'Ecomanage terminée avec succès!"
 print_message "info" "Votre clé publique SSH est:"
@@ -232,10 +357,14 @@ INFORMATIONS IMPORTANTES:
 
 4. Pour accéder à votre système à distance via SSH:
    - Utilisez la clé privée située dans: $USER_HOME/.ssh/id_rsa
-   - Commande: ssh -i chemin/vers/cle_privee $current_user@$(hostname -I | awk '{print $1}')
+   - Commande: ssh -i chemin/vers/cle_privee $current_user@$SERVER_IP
 
 5. Pour accéder à l'interface web d'Ecomanage:
-   http://$(hostname -I | awk '{print $1}'):8080
+   http://$SERVER_IP:8080
+   
+   Identifiants par défaut:
+   - Utilisateur: Administrator
+   - Mot de passe: admin
 
 6. Un journal d'installation est disponible dans:
    $LOG_FILE
