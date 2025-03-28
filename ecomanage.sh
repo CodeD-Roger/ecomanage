@@ -91,14 +91,14 @@ if [ ! -d "$USER_HOME/.ssh" ]; then
     chown $current_user:$current_user "$USER_HOME/.ssh"
 fi
 
-# Génération de la clé SSH
-if [ ! -f "$USER_HOME/.ssh/id_rsa" ]; then
-    su - $current_user -c "ssh-keygen -t rsa -b 2048 -f $USER_HOME/.ssh/id_rsa -N ''" >> $LOG_FILE 2>&1
-    chmod 600 "$USER_HOME/.ssh/id_rsa"
-    chmod 644 "$USER_HOME/.ssh/id_rsa.pub"
-    print_message "info" "Clé SSH générée pour l'utilisateur $current_user"
+# Génération de la clé SSH avec Ed25519 au lieu de RSA
+if [ ! -f "$USER_HOME/.ssh/id_ed25519" ]; then
+    su - $current_user -c "ssh-keygen -t ed25519 -f $USER_HOME/.ssh/id_ed25519 -N ''" >> $LOG_FILE 2>&1
+    chmod 600 "$USER_HOME/.ssh/id_ed25519"
+    chmod 644 "$USER_HOME/.ssh/id_ed25519.pub"
+    print_message "info" "Clé SSH Ed25519 générée pour l'utilisateur $current_user"
 else
-    print_message "warning" "Une clé SSH existe déjà pour l'utilisateur $current_user"
+    print_message "warning" "Une clé SSH Ed25519 existe déjà pour l'utilisateur $current_user"
 fi
 
 # Création et configuration du fichier authorized_keys
@@ -107,7 +107,7 @@ if [ ! -f "$USER_HOME/.ssh/authorized_keys" ]; then
 fi
 
 # Copie de la clé publique dans authorized_keys
-cat "$USER_HOME/.ssh/id_rsa.pub" >> "$USER_HOME/.ssh/authorized_keys"
+cat "$USER_HOME/.ssh/id_ed25519.pub" >> "$USER_HOME/.ssh/authorized_keys"
 
 # Correction des permissions
 chmod 600 "$USER_HOME/.ssh/authorized_keys"
@@ -144,6 +144,12 @@ else
     cd frappe_docker
     git pull >> $LOG_FILE 2>&1
 fi
+
+# Nettoyage des volumes Docker existants pour éviter les conflits
+print_message "info" "Nettoyage des anciens volumes Docker pour éviter les conflits de symlink..."
+cd /opt/frappe_docker
+docker compose -f pwd.yml down -v >> $LOG_FILE 2>&1
+docker volume prune -f -y >> $LOG_FILE 2>&1
 
 # Installation d'ERPNext
 cd /opt/frappe_docker
@@ -227,6 +233,18 @@ SITE_NAME="site1.local"
 
 # Exécution de la commande bench new-site
 print_message "info" "Création du site $SITE_NAME..."
+print_message "info" "Attente que la base de données soit prête..."
+MAX_DB_RETRIES=30
+DB_RETRY=0
+until docker exec $BACKEND_CONTAINER bash -c "mysqladmin ping -h db -u root -padmin" > /dev/null 2>&1; do
+    print_message "info" "En attente de MariaDB (tentative $DB_RETRY)..."
+    sleep 5
+    DB_RETRY=$((DB_RETRY + 1))
+    if [ $DB_RETRY -eq $MAX_DB_RETRIES ]; then
+        print_message "error" "Le serveur MariaDB ne répond pas après $MAX_DB_RETRIES tentatives."
+        exit 1
+    fi
+done
 docker exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench new-site $SITE_NAME --admin-password admin --mariadb-root-password $MYSQL_ROOT_PASSWORD --install-app erpnext" >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
@@ -264,11 +282,11 @@ if [ $? -ne 0 ]; then
 fi
 
 # Sauvegarde de la clé publique dans un fichier accessible
-cp "$USER_HOME/.ssh/id_rsa.pub" "/home/$current_user/ecomanage_ssh_key.pub"
+cp "$USER_HOME/.ssh/id_ed25519.pub" "/home/$current_user/ecomanage_ssh_key.pub"
 chown $current_user:$current_user "/home/$current_user/ecomanage_ssh_key.pub"
 
 # Sauvegarde de la clé privée dans un fichier accessible
-cp "$USER_HOME/.ssh/id_rsa" "/home/$current_user/ecomanage_ssh_key"
+cp "$USER_HOME/.ssh/id_ed25519" "/home/$current_user/ecomanage_ssh_key"
 chmod 600 "/home/$current_user/ecomanage_ssh_key"
 chown $current_user:$current_user "/home/$current_user/ecomanage_ssh_key"
 
@@ -279,7 +297,7 @@ cat > "/home/$current_user/add_ssh_key.sh" << 'EOF'
 
 if [ -z "$1" ]; then
     echo "Usage: $0 \"votre_cle_ssh_publique\""
-    echo "Exemple: $0 \"ssh-rsa AAAAB3NzaC1yc2E... user@example.com\""
+    echo "Exemple: $0 \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... user@example.com\""
     exit 1
 fi
 
@@ -331,7 +349,7 @@ fi
 print_message "info" "Installation d'Ecomanage terminée avec succès!"
 print_message "info" "Votre clé publique SSH est:"
 echo "-------------------------------------------------------------------"
-cat "$USER_HOME/.ssh/id_rsa.pub"
+cat "$USER_HOME/.ssh/id_ed25519.pub"
 echo "-------------------------------------------------------------------"
 print_message "info" "La clé publique a été sauvegardée dans: /home/$current_user/ecomanage_ssh_key.pub"
 print_message "info" "La clé privée a été sauvegardée dans: /home/$current_user/ecomanage_ssh_key"
@@ -356,7 +374,7 @@ INFORMATIONS IMPORTANTES:
    /home/$current_user/add_ssh_key.sh "votre_cle_ssh_publique"
 
 4. Pour accéder à votre système à distance via SSH:
-   - Utilisez la clé privée située dans: $USER_HOME/.ssh/id_rsa
+   - Utilisez la clé privée située dans: $USER_HOME/.ssh/id_ed25519
    - Commande: ssh -i chemin/vers/cle_privee $current_user@$SERVER_IP
 
 5. Pour accéder à l'interface web d'Ecomanage:
