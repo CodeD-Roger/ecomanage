@@ -359,6 +359,21 @@ else
     print_message "warning" "Le site ERPNext n'est pas encore accessible (HTTP status: $HTTP_STATUS). Il pourrait nécessiter plus de temps pour s'initialiser."
 fi
 
+# Installation et activation de Cockpit pour le monitoring système
+print_message "info" "Installation de l'outil de monitoring Cockpit..."
+apt install -y cockpit >> $LOG_FILE 2>&1
+
+print_message "info" "Activation du service Cockpit..."
+systemctl enable --now cockpit >> $LOG_FILE 2>&1
+
+# Vérification que Cockpit est actif
+if systemctl is-active --quiet cockpit; then
+    print_message "info" "Cockpit installé et actif avec succès"
+else
+    print_message "warning" "Problème lors de l'installation ou de l'activation de Cockpit. Vérifiez manuellement."
+fi
+
+
 # Affichage des informations finales
 print_message "info" "Installation d'Ecomanage terminée avec succès!"
 print_message "info" "Votre clé publique SSH est:"
@@ -369,6 +384,10 @@ print_message "info" "La clé publique a été sauvegardée dans: /home/$current
 print_message "info" "La clé privée a été sauvegardée dans: /home/$current_user/ecomanage_ssh_key"
 
 # Instructions finales
+cat << EOF
+# Récupération de l'IP actuelle
+SERVER_IP=$(hostname -I | awk '{print $1}')
+
 cat << EOF
 
 ====================================================================
@@ -398,12 +417,15 @@ INFORMATIONS IMPORTANTES:
    - Utilisateur: Administrator
    - Mot de passe: admin
 
-6. Un journal d'installation est disponible dans:
+6. Pour accéder à l'interface de monitoring système Cockpit:
+   https://$SERVER_IP:9090
+   Connectez-vous avec vos identifiants Linux habituels (utilisateur système).
+
+7. Un journal d'installation est disponible dans:
    $LOG_FILE
 
 Pour toute assistance supplémentaire, contactez le support technique.
 ====================================================================
 
 EOF
-
 echo "$(date) - Installation terminée avec succès" >> $LOG_FILE
