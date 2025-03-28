@@ -132,7 +132,7 @@ sh install-docker.sh >> $LOG_FILE 2>&1
 docker ps >> $LOG_FILE 2>&1
 if [ $? -ne 0 ]; then
     print_message "error" "L'installation de Docker a échoué. Veuillez vérifier le fichier log: $LOG_FILE"
-    exit 1
+    exit 1cat 
 fi
 
 # Clone du dépôt frappe_docker
@@ -143,6 +143,20 @@ else
     print_message "warning" "Le répertoire frappe_docker existe déjà. Utilisation du répertoire existant."
     cd frappe_docker
     git pull >> $LOG_FILE 2>&1
+fi
+
+# Modification automatique pour fixer une version précise d'ERPNext dans Docker Compose
+ERP_VERSION="v15.55.2" # Modifie ici la version désirée
+
+if [ -f "/opt/frappe_docker/pwd.yml" ]; then
+    sed -i "s|image: frappe/erpnext:.*|image: frappe/erpnext:$ERP_VERSION|g" /opt/frappe_docker/pwd.yml
+    print_message "info" "Version ERPNext fixée à $ERP_VERSION dans pwd.yml"
+elif [ -f "/opt/frappe_docker/compose.yaml" ]; then
+    sed -i "s|image: frappe/erpnext:.*|image: frappe/erpnext:$ERP_VERSION|g" /opt/frappe_docker/compose.yaml
+    print_message "info" "Version ERPNext fixée à $ERP_VERSION dans compose.yaml"
+else
+    print_message "error" "Fichier Docker Compose introuvable. Vérifie le dépôt frappe_docker."
+    exit 1
 fi
 
 # Nettoyage des volumes Docker existants pour éviter les conflits
