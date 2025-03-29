@@ -36,12 +36,23 @@ chmod 644 $LOG_FILE
 print_message "info" "Installation de Ecomanage (basé sur ERPNext) démarrée. Veuillez patienter..."
 echo "$(date) - Installation démarrée" >> $LOG_FILE
 
+# Fonction pour attendre que apt soit disponible
+wait_for_apt() {
+    print_message "info" "Vérification de la disponibilité d'apt..."
+    while pgrep -f apt > /dev/null || fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        print_message "warning" "Un autre processus utilise apt. Attente de 30 secondes..."
+        sleep 30
+    done
+}
+
 # Mise à jour du système
 print_message "info" "Mise à jour des paquets..."
+wait_for_apt
 apt update -qq && apt upgrade -y -qq >> $LOG_FILE 2>&1
 
 # Vérification et installation des dépendances
 print_message "info" "Installation des dépendances nécessaires..."
+wait_for_apt
 apt install -y curl git openssh-server jq >> $LOG_FILE 2>&1
 
 # Configuration de SSH
@@ -117,6 +128,7 @@ chown $current_user:$current_user "$USER_HOME/.ssh/authorized_keys"
 print_message "info" "Installation de Docker et ERPNext..."
 
 # Installation de curl
+wait_for_apt
 apt install -y curl >> $LOG_FILE 2>&1
 
 # Téléchargement du script d'installation Docker
@@ -126,13 +138,33 @@ curl -fsSL https://get.docker.com -o install-docker.sh >> $LOG_FILE 2>&1
 sh install-docker.sh --dry-run >> $LOG_FILE 2>&1
 
 # Installation de Docker
+wait_for_apt
 sh install-docker.sh >> $LOG_FILE 2>&1
 
+# S'assurer que Docker est dans le PATH
+export PATH=$PATH:/usr/bin
+
+# Attendre que le service Docker soit prêt
+print_message "info" "Attente que le service Docker soit prêt..."
+sleep 10
+
 # Vérification de l'installation Docker
-docker ps >> $LOG_FILE 2>&1
+if ! command -v docker &> /dev/null; then
+    print_message "warning" "La commande docker n'est pas trouvée dans le PATH. Tentative avec le chemin complet..."
+    if [ -f "/usr/bin/docker" ]; then
+        DOCKER_CMD="/usr/bin/docker"
+    else
+        print_message "error" "Docker n'est pas correctement installé. Veuillez vérifier le fichier log: $LOG_FILE"
+        exit 1
+    fi
+else
+    DOCKER_CMD="docker"
+fi
+
+$DOCKER_CMD ps >> $LOG_FILE 2>&1
 if [ $? -ne 0 ]; then
     print_message "error" "L'installation de Docker a échoué. Veuillez vérifier le fichier log: $LOG_FILE"
-    exit 1cat 
+    exit 1
 fi
 
 # Clone du dépôt frappe_docker
@@ -162,13 +194,13 @@ fi
 # Nettoyage des volumes Docker existants pour éviter les conflits
 print_message "info" "Nettoyage des anciens volumes Docker pour éviter les conflits de symlink..."
 cd /opt/frappe_docker
-docker compose -f pwd.yml down -v >> $LOG_FILE 2>&1
-docker volume prune -f -y >> $LOG_FILE 2>&1
+$DOCKER_CMD compose -f pwd.yml down -v >> $LOG_FILE 2>&1
+$DOCKER_CMD volume prune -f >> $LOG_FILE 2>&1
 
 # Installation d'ERPNext
 cd /opt/frappe_docker
 print_message "info" "Lancement des conteneurs Docker pour ERPNext..."
-docker compose -f pwd.yml up -d >> $LOG_FILE 2>&1
+$DOCKER_CMD compose -f pwd.yml up -d >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
     print_message "error" "Le lancement des conteneurs ERPNext a échoué. Veuillez vérifier le fichier log: $LOG_FILE"
@@ -178,13 +210,13 @@ fi
 # Vérification que les conteneurs sont bien lancés
 print_message "info" "Vérification des conteneurs ERPNext..."
 sleep 10  # Attendre que les conteneurs démarrent
-CONTAINERS_RUNNING=$(docker ps --format '{{.Names}}' | grep -c "frappe")
+CONTAINERS_RUNNING=$($DOCKER_CMD ps --format '{{.Names}}' | grep -c "frappe")
 if [ "$CONTAINERS_RUNNING" -lt 3 ]; then
     print_message "warning" "Certains conteneurs ERPNext ne semblent pas être en cours d'exécution. Tentative de relance..."
-    docker compose -f pwd.yml down >> $LOG_FILE 2>&1
-    docker compose -f pwd.yml up -d >> $LOG_FILE 2>&1
+    $DOCKER_CMD compose -f pwd.yml down >> $LOG_FILE 2>&1
+    $DOCKER_CMD compose -f pwd.yml up -d >> $LOG_FILE 2>&1
     sleep 15
-    CONTAINERS_RUNNING=$(docker ps --format '{{.Names}}' | grep -c "frappe")
+    CONTAINERS_RUNNING=$($DOCKER_CMD ps --format '{{.Names}}' | grep -c "frappe")
     if [ "$CONTAINERS_RUNNING" -lt 3 ]; then
         print_message "error" "Impossible de lancer tous les conteneurs ERPNext. Veuillez vérifier le fichier log: $LOG_FILE"
         exit 1
@@ -198,7 +230,7 @@ echo "Mot de passe MySQL root défini: $MYSQL_ROOT_PASSWORD" >> $LOG_FILE
 
 # Attendre que le conteneur backend soit prêt
 print_message "info" "Attente de l'initialisation des conteneurs..."
-BACKEND_CONTAINER=$(docker ps --format '{{.Names}}' | grep "backend")
+BACKEND_CONTAINER=$($DOCKER_CMD ps --format '{{.Names}}' | grep "backend")
 if [ -z "$BACKEND_CONTAINER" ]; then
     print_message "error" "Conteneur backend non trouvé"
     exit 1
@@ -208,7 +240,7 @@ fi
 RETRY_COUNT=0
 MAX_RETRIES=30
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    if docker exec $BACKEND_CONTAINER test -d /home/frappe/frappe-bench/sites; then
+    if $DOCKER_CMD exec $BACKEND_CONTAINER test -d /home/frappe/frappe-bench/sites; then
         break
     fi
     print_message "info" "En attente de l'initialisation du système de fichiers... ($RETRY_COUNT/$MAX_RETRIES)"
@@ -226,13 +258,13 @@ print_message "info" "Injection du mot de passe MySQL dans la configuration..."
 CONFIG_FILE="/home/frappe/frappe-bench/sites/common_site_config.json"
 
 # Vérifier si le fichier existe dans le conteneur
-if ! docker exec $BACKEND_CONTAINER test -f $CONFIG_FILE; then
+if ! $DOCKER_CMD exec $BACKEND_CONTAINER test -f $CONFIG_FILE; then
     print_message "warning" "Fichier de configuration non trouvé, création..."
-    docker exec $BACKEND_CONTAINER bash -c "echo '{}' > $CONFIG_FILE"
+    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "echo '{}' > $CONFIG_FILE"
 fi
 
 # Injecter le mot de passe MySQL
-docker exec $BACKEND_CONTAINER bash -c "cat $CONFIG_FILE | jq '. + {\"db_password\": \"$MYSQL_ROOT_PASSWORD\"}' > /tmp/config.json && mv /tmp/config.json $CONFIG_FILE" >> $LOG_FILE 2>&1
+$DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cat $CONFIG_FILE | jq '. + {\"db_password\": \"$MYSQL_ROOT_PASSWORD\"}' > /tmp/config.json && mv /tmp/config.json $CONFIG_FILE" >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
     print_message "error" "Échec de l'injection du mot de passe MySQL. Veuillez vérifier le fichier log: $LOG_FILE"
@@ -250,7 +282,7 @@ print_message "info" "Création du site $SITE_NAME..."
 print_message "info" "Attente que la base de données soit prête..."
 MAX_DB_RETRIES=30
 DB_RETRY=0
-until docker exec $BACKEND_CONTAINER bash -c "mysqladmin ping -h db -u root -padmin" > /dev/null 2>&1; do
+until $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "mysqladmin ping -h db -u root -padmin" > /dev/null 2>&1; do
     print_message "info" "En attente de MariaDB (tentative $DB_RETRY)..."
     sleep 5
     DB_RETRY=$((DB_RETRY + 1))
@@ -259,7 +291,7 @@ until docker exec $BACKEND_CONTAINER bash -c "mysqladmin ping -h db -u root -pad
         exit 1
     fi
 done
-docker exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench new-site $SITE_NAME --admin-password admin --mariadb-root-password $MYSQL_ROOT_PASSWORD --install-app erpnext" >> $LOG_FILE 2>&1
+$DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench new-site $SITE_NAME --admin-password admin --mariadb-root-password $MYSQL_ROOT_PASSWORD --install-app erpnext" >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
     print_message "error" "Échec de la création du site ERPNext. Veuillez vérifier le fichier log: $LOG_FILE"
@@ -267,9 +299,9 @@ if [ $? -ne 0 ]; then
     print_message "warning" "Tentative de résolution des problèmes..."
     
     # Vérifier si le site existe déjà
-    if docker exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME list-apps" >> $LOG_FILE 2>&1; then
+    if $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME list-apps" >> $LOG_FILE 2>&1; then
         print_message "warning" "Le site semble déjà exister. Tentative d'installation de l'application erpnext..."
-        docker exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app erpnext" >> $LOG_FILE 2>&1
+        $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app erpnext" >> $LOG_FILE 2>&1
     else
         print_message "error" "Impossible de créer ou de configurer le site ERPNext"
         exit 1
@@ -278,7 +310,7 @@ fi
 
 # Configuration du site par défaut
 print_message "info" "Configuration du site par défaut..."
-docker exec $BACKEND_CONTAINER bash -c "echo \"$SITE_NAME\" > /home/frappe/frappe-bench/sites/currentsite.txt" >> $LOG_FILE 2>&1
+$DOCKER_CMD exec $BACKEND_CONTAINER bash -c "echo \"$SITE_NAME\" > /home/frappe/frappe-bench/sites/currentsite.txt" >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
     print_message "error" "Échec de la configuration du site par défaut. Veuillez vérifier le fichier log: $LOG_FILE"
@@ -288,7 +320,7 @@ fi
 # Redémarrage des services Docker
 print_message "info" "Redémarrage des services Docker..."
 cd /opt/frappe_docker
-docker compose -f pwd.yml restart >> $LOG_FILE 2>&1
+$DOCKER_CMD compose -f pwd.yml restart >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
     print_message "error" "Échec du redémarrage des services Docker. Veuillez vérifier le fichier log: $LOG_FILE"
@@ -361,6 +393,7 @@ fi
 
 # Installation et activation de Cockpit pour le monitoring système
 print_message "info" "Installation de l'outil de monitoring Cockpit..."
+wait_for_apt
 apt install -y cockpit >> $LOG_FILE 2>&1
 
 print_message "info" "Activation du service Cockpit..."
@@ -373,7 +406,6 @@ else
     print_message "warning" "Problème lors de l'installation ou de l'activation de Cockpit. Vérifiez manuellement."
 fi
 
-
 # Affichage des informations finales
 print_message "info" "Installation d'Ecomanage terminée avec succès!"
 print_message "info" "Votre clé publique SSH est:"
@@ -384,8 +416,6 @@ print_message "info" "La clé publique a été sauvegardée dans: /home/$current
 print_message "info" "La clé privée a été sauvegardée dans: /home/$current_user/ecomanage_ssh_key"
 
 # Instructions finales
-cat << EOF
-# Récupération de l'IP actuelle
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
 cat << EOF
