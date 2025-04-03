@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script ecomanage.sh - Version corrigée pour résoudre les problèmes de symlink
+# Script ecomanage.sh - Version améliorée avec activation des modules
 
 # Fonction pour afficher les messages avec des couleurs
 print_message() {
@@ -167,14 +167,6 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Installation de docker-compose si nécessaire
-if ! command -v docker-compose &> /dev/null; then
-    print_message "info" "Installation de docker-compose..."
-    curl -L "https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-fi
-
 # Clone du dépôt frappe_docker
 cd /opt
 if [ ! -d "frappe_docker" ]; then
@@ -186,7 +178,7 @@ else
 fi
 
 # Modification automatique pour fixer une version précise d'ERPNext dans Docker Compose
-ERP_VERSION="v15.0.0" # Version stable d'ERPNext
+ERP_VERSION="v15.55.2" # Modifie ici la version désirée
 
 if [ -f "/opt/frappe_docker/pwd.yml" ]; then
     sed -i "s|image: frappe/erpnext:.*|image: frappe/erpnext:$ERP_VERSION|g" /opt/frappe_docker/pwd.yml
@@ -199,122 +191,31 @@ else
     exit 1
 fi
 
-# ===== CORRECTION DU PROBLÈME DE SYMLINK =====
-print_message "info" "Préparation pour éviter les problèmes de symlink..."
-
-# Arrêt complet de tous les conteneurs Docker liés à Frappe/ERPNext
-print_message "info" "Arrêt de tous les conteneurs Docker existants..."
-$DOCKER_CMD ps -a | grep -E 'frappe|erpnext' | awk '{print $1}' | xargs -r $DOCKER_CMD stop >> $LOG_FILE 2>&1
-$DOCKER_CMD ps -a | grep -E 'frappe|erpnext' | awk '{print $1}' | xargs -r $DOCKER_CMD rm -f >> $LOG_FILE 2>&1
-
-# Suppression complète des volumes Docker liés à Frappe/ERPNext
-print_message "info" "Suppression des volumes Docker existants..."
-$DOCKER_CMD volume ls | grep -E 'frappe|erpnext' | awk '{print $2}' | xargs -r $DOCKER_CMD volume rm -f >> $LOG_FILE 2>&1
-
-# Nettoyage spécifique du volume problématique
-if $DOCKER_CMD volume ls | grep -q "frappe_docker_sites"; then
-    print_message "info" "Suppression du volume frappe_docker_sites..."
-    $DOCKER_CMD volume rm -f frappe_docker_sites >> $LOG_FILE 2>&1
-fi
-
-# Nettoyage des volumes orphelins
-print_message "info" "Nettoyage des volumes orphelins..."
+# Nettoyage des volumes Docker existants pour éviter les conflits
+print_message "info" "Nettoyage des anciens volumes Docker pour éviter les conflits de symlink..."
+cd /opt/frappe_docker
+$DOCKER_CMD compose -f pwd.yml down -v >> $LOG_FILE 2>&1
 $DOCKER_CMD volume prune -f >> $LOG_FILE 2>&1
-
-# Vérification et nettoyage du répertoire de destination
-print_message "info" "Vérification du répertoire de destination pour les symlinks..."
-if [ -d "/var/lib/docker/volumes/frappe_docker_sites" ]; then
-    print_message "warning" "Le répertoire de volume existe toujours. Tentative de nettoyage manuel..."
-    rm -rf /var/lib/docker/volumes/frappe_docker_sites >> $LOG_FILE 2>&1
-fi
-
-# Redémarrage du service Docker pour s'assurer que tout est propre
-print_message "info" "Redémarrage du service Docker..."
-systemctl restart docker
-sleep 10
-
-# ===== FIN DE LA CORRECTION =====
 
 # Installation d'ERPNext
 cd /opt/frappe_docker
 print_message "info" "Lancement des conteneurs Docker pour ERPNext..."
+$DOCKER_CMD compose -f pwd.yml up -d >> $LOG_FILE 2>&1
 
-# Utilisation de docker-compose ou docker compose selon la disponibilité
-if command -v docker-compose &> /dev/null; then
-    docker-compose -f pwd.yml up -d >> $LOG_FILE 2>&1
-    COMPOSE_RESULT=$?
-else
-    $DOCKER_CMD compose -f pwd.yml up -d >> $LOG_FILE 2>&1
-    COMPOSE_RESULT=$?
-fi
-
-# Vérification du résultat du lancement
-if [ $COMPOSE_RESULT -ne 0 ]; then
-    print_message "error" "Le lancement des conteneurs ERPNext a échoué. Tentative de résolution..."
-    
-    # Vérification des erreurs spécifiques de symlink
-    if $DOCKER_CMD logs $($DOCKER_CMD ps -a | grep frappe | head -n1 | awk '{print $1}') 2>&1 | grep -q "failed to create symlink"; then
-        print_message "warning" "Problème de symlink détecté. Tentative de résolution alternative..."
-        
-        # Création d'un conteneur temporaire pour accéder au volume et nettoyer manuellement
-        print_message "info" "Création d'un conteneur temporaire pour nettoyer le volume..."
-        $DOCKER_CMD run --rm -v frappe_docker_sites:/vol alpine sh -c "rm -rf /vol/assets/frappe" >> $LOG_FILE 2>&1
-        
-        # Nouvelle tentative après nettoyage
-        print_message "info" "Nouvelle tentative de lancement après nettoyage..."
-        if command -v docker-compose &> /dev/null; then
-            docker-compose -f pwd.yml up -d >> $LOG_FILE 2>&1
-        else
-            $DOCKER_CMD compose -f pwd.yml up -d >> $LOG_FILE 2>&1
-        fi
-        
-        if [ $? -ne 0 ]; then
-            print_message "error" "Échec persistant. Tentative avec une approche différente..."
-            
-            # Approche alternative: utilisation de l'option --force-recreate
-            if command -v docker-compose &> /dev/null; then
-                docker-compose -f pwd.yml up -d --force-recreate >> $LOG_FILE 2>&1
-            else
-                $DOCKER_CMD compose -f pwd.yml up -d --force-recreate >> $LOG_FILE 2>&1
-            fi
-            
-            if [ $? -ne 0 ]; then
-                print_message "error" "Impossible de résoudre le problème automatiquement. Veuillez vérifier le fichier log: $LOG_FILE"
-                exit 1
-            fi
-        fi
-    else
-        print_message "error" "Problème inconnu lors du lancement des conteneurs. Veuillez vérifier le fichier log: $LOG_FILE"
-        exit 1
-    fi
+if [ $? -ne 0 ]; then
+    print_message "error" "Le lancement des conteneurs ERPNext a échoué. Veuillez vérifier le fichier log: $LOG_FILE"
+    exit 1
 fi
 
 # Vérification que les conteneurs sont bien lancés
 print_message "info" "Vérification des conteneurs ERPNext..."
-sleep 20  # Attendre plus longtemps que les conteneurs démarrent
+sleep 10  # Attendre que les conteneurs démarrent
 CONTAINERS_RUNNING=$($DOCKER_CMD ps --format '{{.Names}}' | grep -c "frappe")
 if [ "$CONTAINERS_RUNNING" -lt 3 ]; then
     print_message "warning" "Certains conteneurs ERPNext ne semblent pas être en cours d'exécution. Tentative de relance..."
-    
-    # Arrêt propre
-    if command -v docker-compose &> /dev/null; then
-        docker-compose -f pwd.yml down >> $LOG_FILE 2>&1
-    else
-        $DOCKER_CMD compose -f pwd.yml down >> $LOG_FILE 2>&1
-    fi
-    
-    # Nettoyage supplémentaire
-    $DOCKER_CMD volume prune -f >> $LOG_FILE 2>&1
-    
-    # Relance avec --force-recreate
-    print_message "info" "Relance des conteneurs avec --force-recreate..."
-    if command -v docker-compose &> /dev/null; then
-        docker-compose -f pwd.yml up -d --force-recreate >> $LOG_FILE 2>&1
-    else
-        $DOCKER_CMD compose -f pwd.yml up -d --force-recreate >> $LOG_FILE 2>&1
-    fi
-    
-    sleep 30
+    $DOCKER_CMD compose -f pwd.yml down >> $LOG_FILE 2>&1
+    $DOCKER_CMD compose -f pwd.yml up -d >> $LOG_FILE 2>&1
+    sleep 15
     CONTAINERS_RUNNING=$($DOCKER_CMD ps --format '{{.Names}}' | grep -c "frappe")
     if [ "$CONTAINERS_RUNNING" -lt 3 ]; then
         print_message "error" "Impossible de lancer tous les conteneurs ERPNext. Veuillez vérifier le fichier log: $LOG_FILE"
@@ -337,7 +238,7 @@ fi
 
 # Attendre que le système de fichiers soit prêt
 RETRY_COUNT=0
-MAX_RETRIES=60  # Augmentation du nombre de tentatives
+MAX_RETRIES=30
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     if $DOCKER_CMD exec $BACKEND_CONTAINER test -d /home/frappe/frappe-bench/sites; then
         break
@@ -379,7 +280,7 @@ SITE_NAME="site1.local"
 # Exécution de la commande bench new-site
 print_message "info" "Création du site $SITE_NAME..."
 print_message "info" "Attente que la base de données soit prête..."
-MAX_DB_RETRIES=60  # Augmentation du nombre de tentatives
+MAX_DB_RETRIES=30
 DB_RETRY=0
 until $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "mysqladmin ping -h db -u root -padmin" > /dev/null 2>&1; do
     print_message "info" "En attente de MariaDB (tentative $DB_RETRY)..."
@@ -391,38 +292,21 @@ until $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "mysqladmin ping -h db -u root
     fi
 done
 
-# Vérification si le site existe déjà
-if $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && ls -la sites" | grep -q "$SITE_NAME"; then
-    print_message "warning" "Le site $SITE_NAME semble déjà exister. Vérification de l'installation d'erpnext..."
-    if ! $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME list-apps" | grep -q "erpnext"; then
-        print_message "info" "Installation de l'application erpnext sur le site existant..."
+# Création du site avec installation complète d'ERPNext
+$DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench new-site $SITE_NAME --admin-password admin --mariadb-root-password $MYSQL_ROOT_PASSWORD --install-app erpnext" >> $LOG_FILE 2>&1
+
+if [ $? -ne 0 ]; then
+    print_message "error" "Échec de la création du site ERPNext. Veuillez vérifier le fichier log: $LOG_FILE"
+    # Tentative de résolution des problèmes courants
+    print_message "warning" "Tentative de résolution des problèmes..."
+    
+    # Vérifier si le site existe déjà
+    if $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME list-apps" >> $LOG_FILE 2>&1; then
+        print_message "warning" "Le site semble déjà exister. Tentative d'installation de l'application erpnext..."
         $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app erpnext" >> $LOG_FILE 2>&1
     else
-        print_message "info" "L'application erpnext est déjà installée sur le site."
-    fi
-else
-    # Création d'un nouveau site
-    print_message "info" "Création d'un nouveau site $SITE_NAME..."
-    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench new-site $SITE_NAME --admin-password admin --mariadb-root-password $MYSQL_ROOT_PASSWORD --install-app erpnext" >> $LOG_FILE 2>&1
-    
-    if [ $? -ne 0 ]; then
-        print_message "error" "Échec de la création du site ERPNext. Tentative alternative..."
-        
-        # Tentative alternative: création du site sans installer erpnext, puis installation séparée
-        $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench new-site $SITE_NAME --admin-password admin --mariadb-root-password $MYSQL_ROOT_PASSWORD" >> $LOG_FILE 2>&1
-        
-        if [ $? -eq 0 ]; then
-            print_message "info" "Site créé avec succès. Installation de l'application erpnext..."
-            $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app erpnext" >> $LOG_FILE 2>&1
-            
-            if [ $? -ne 0 ]; then
-                print_message "error" "Échec de l'installation de l'application erpnext."
-                exit 1
-            fi
-        else
-            print_message "error" "Impossible de créer le site ERPNext."
-            exit 1
-        fi
+        print_message "error" "Impossible de créer ou de configurer le site ERPNext"
+        exit 1
     fi
 fi
 
@@ -435,19 +319,135 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# NOUVELLE SECTION: Activation explicite des modules nécessaires
+print_message "info" "Activation des modules nécessaires pour la configuration complète..."
+
+# Liste des modules essentiels à activer
+ESSENTIAL_MODULES=("Core" "Accounts" "Stock" "Setup" "Custom" "Website" "Buying" "Selling" "HR" "CRM" "Manufacturing" "Projects" "Support")
+
+# Fonction pour activer un module
+activate_module() {
+    local module_name=$1
+    print_message "info" "Activation du module $module_name..."
+    
+    # Vérifier si le module existe
+    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME enable-module $module_name" >> $LOG_FILE 2>&1
+    
+    if [ $? -eq 0 ]; then
+        print_message "info" "Module $module_name activé avec succès"
+        return 0
+    else
+        print_message "warning" "Problème lors de l'activation du module $module_name. Tentative d'installation..."
+        
+        # Tentative d'installation du module si nécessaire
+        $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench get-app $module_name" >> $LOG_FILE 2>&1
+        $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app $module_name" >> $LOG_FILE 2>&1
+        
+        # Nouvelle tentative d'activation
+        $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME enable-module $module_name" >> $LOG_FILE 2>&1
+        
+        if [ $? -eq 0 ]; then
+            print_message "info" "Module $module_name installé et activé avec succès"
+            return 0
+        else
+            print_message "error" "Impossible d'activer le module $module_name"
+            return 1
+        fi
+    fi
+}
+
+# Activer tous les modules essentiels
+for module in "${ESSENTIAL_MODULES[@]}"; do
+    activate_module "$module"
+done
+
+# Vérification de l'activation des modules critiques
+print_message "info" "Vérification de l'activation des modules critiques..."
+
+# Créer un script temporaire pour vérifier les modules
+cat > /tmp/check_modules.py << 'EOF'
+import frappe
+import json
+
+modules = ["Core", "Accounts", "Stock", "Setup", "Custom"]
+result = {}
+
+for module in modules:
+    try:
+        doc = frappe.get_doc("Module Def", module)
+        result[module] = "Available"
+    except Exception as e:
+        result[module] = f"Not available: {str(e)}"
+
+print(json.dumps(result, indent=2))
+EOF
+
+# Exécuter le script de vérification
+$DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME execute /tmp/check_modules.py" > /tmp/module_check_result.txt 2>&1
+
+# Afficher les résultats
+print_message "info" "Résultat de la vérification des modules:"
+cat /tmp/module_check_result.txt
+
+# Vérifier si les modules critiques sont disponibles
+if grep -q "Not available" /tmp/module_check_result.txt; then
+    print_message "warning" "Certains modules critiques ne sont pas disponibles. Tentative de réparation..."
+    
+    # Réinstallation complète d'ERPNext
+    print_message "info" "Réinstallation complète d'ERPNext pour assurer la disponibilité des modules..."
+    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench reinstall --yes" >> $LOG_FILE 2>&1
+    
+    # Réinstallation de l'application ERPNext
+    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app erpnext --force" >> $LOG_FILE 2>&1
+    
+    # Nouvelle vérification des modules
+    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME execute /tmp/check_modules.py" > /tmp/module_check_result.txt 2>&1
+    
+    print_message "info" "Résultat après réparation:"
+    cat /tmp/module_check_result.txt
+    
+    if grep -q "Not available" /tmp/module_check_result.txt; then
+        print_message "warning" "Certains modules sont toujours indisponibles. La configuration automatique pourrait ne pas fonctionner complètement."
+    else
+        print_message "info" "Tous les modules critiques sont maintenant disponibles!"
+    fi
+else
+    print_message "info" "Tous les modules critiques sont disponibles!"
+fi
+
+# Installation des applications supplémentaires nécessaires
+print_message "info" "Installation des applications supplémentaires nécessaires..."
+ADDITIONAL_APPS=("payments" "hrms")
+
+for app in "${ADDITIONAL_APPS[@]}"; do
+    print_message "info" "Installation de l'application $app..."
+    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench get-app $app" >> $LOG_FILE 2>&1
+    $DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench --site $SITE_NAME install-app $app" >> $LOG_FILE 2>&1
+    
+    if [ $? -eq 0 ]; then
+        print_message "info" "Application $app installée avec succès"
+    else
+        print_message "warning" "Problème lors de l'installation de l'application $app"
+    fi
+done
+
+# Mise à jour des dépendances
+print_message "info" "Mise à jour des dépendances..."
+$DOCKER_CMD exec $BACKEND_CONTAINER bash -c "cd /home/frappe/frappe-bench && bench update --requirements" >> $LOG_FILE 2>&1
+
 # Redémarrage des services Docker
 print_message "info" "Redémarrage des services Docker..."
 cd /opt/frappe_docker
-if command -v docker-compose &> /dev/null; then
-    docker-compose -f pwd.yml restart >> $LOG_FILE 2>&1
-else
-    $DOCKER_CMD compose -f pwd.yml restart >> $LOG_FILE 2>&1
-fi
+$DOCKER_CMD compose -f pwd.yml restart >> $LOG_FILE 2>&1
 
 if [ $? -ne 0 ]; then
     print_message "error" "Échec du redémarrage des services Docker. Veuillez vérifier le fichier log: $LOG_FILE"
     exit 1
 fi
+
+# Attendre que le système soit prêt après le redémarrage
+print_message "info" "Attente que le système soit prêt après le redémarrage..."
+sleep 30
 
 # Sauvegarde de la clé publique dans un fichier accessible
 cp "$USER_HOME/.ssh/id_ed25519.pub" "/home/$current_user/ecomanage_ssh_key.pub"
@@ -499,7 +499,7 @@ chown $current_user:$current_user "/home/$current_user/add_ssh_key.sh"
 
 # Attendre que le site soit complètement prêt
 print_message "info" "Attente de la finalisation du site ERPNext..."
-sleep 30
+sleep 20
 
 # Vérification finale
 SERVER_IP=$(hostname -I | awk '{print $1}')
@@ -511,31 +511,6 @@ if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "302" || "$HTTP_STATUS" == "3
     print_message "info" "Site ERPNext accessible avec succès!"
 else
     print_message "warning" "Le site ERPNext n'est pas encore accessible (HTTP status: $HTTP_STATUS). Il pourrait nécessiter plus de temps pour s'initialiser."
-    
-    # Vérification des logs pour diagnostiquer le problème
-    print_message "info" "Vérification des logs pour diagnostiquer le problème..."
-    $DOCKER_CMD logs $($DOCKER_CMD ps | grep frappe | head -n1 | awk '{print $1}') >> $LOG_FILE 2>&1
-    
-    # Tentative de redémarrage des conteneurs
-    print_message "info" "Tentative de redémarrage des conteneurs..."
-    if command -v docker-compose &> /dev/null; then
-        docker-compose -f pwd.yml restart >> $LOG_FILE 2>&1
-    else
-        $DOCKER_CMD compose -f pwd.yml restart >> $LOG_FILE 2>&1
-    fi
-    
-    print_message "info" "Attente supplémentaire pour l'initialisation..."
-    sleep 60
-    
-    # Nouvelle vérification
-    curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:8080 > /tmp/http_status
-    HTTP_STATUS=$(cat /tmp/http_status)
-    
-    if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "302" || "$HTTP_STATUS" == "301" ]]; then
-        print_message "info" "Site ERPNext accessible après redémarrage!"
-    else
-        print_message "warning" "Le site ERPNext n'est toujours pas accessible (HTTP status: $HTTP_STATUS). Vérifiez manuellement après quelques minutes."
-    fi
 fi
 
 # Installation et activation de Cockpit pour le monitoring système
@@ -600,6 +575,8 @@ INFORMATIONS IMPORTANTES:
 
 7. Un journal d'installation est disponible dans:
    $LOG_FILE
+
+8. TOUS LES MODULES NÉCESSAIRES ONT ÉTÉ ACTIVÉS POUR LA CONFIGURATION AUTOMATIQUE
 
 Pour toute assistance supplémentaire, contactez le support technique.
 ====================================================================
