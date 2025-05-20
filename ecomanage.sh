@@ -129,6 +129,7 @@ if [ ! -d "${ODOO_HOME}/venv" ]; then
     source "${ODOO_HOME}/venv/bin/activate"
     pip install --upgrade pip
     pip install -r "${ODOO_HOME}/odoo/requirements.txt"
+    pip install phonenumbers
     deactivate
     chown -R "${ODOO_USER}:${ODOO_USER}" "${ODOO_HOME}/venv"
     log "Environnement virtuel configuré"
@@ -200,13 +201,27 @@ else
 fi
 
 if ! id "${SSH_USER}" >/dev/null 2>&1; then
-    adduser --gecos "" --disabled-password "${SSH_USER}"
+    log "Saisie du mot de passe pour l'utilisateur SSH ${SSH_USER}"
+    while true; do
+        read -s -p "Entrez le mot de passe pour ${SSH_USER}: " password
+        echo
+        read -s -p "Confirmez le mot de passe: " password_confirm
+        echo
+        if [ "$password" = "$password_confirm" ]; then
+            break
+        else
+            log "Les mots de passe ne correspondent pas. Veuillez réessayer."
+        fi
+    done
+    adduser --gecos "" "${SSH_USER}"
+    echo "${SSH_USER}:${password}" | chpasswd
+    usermod -aG sudo "${SSH_USER}"
     mkdir -p "/home/${SSH_USER}/.ssh"
     cat "${SSH_PUBLIC_KEY}" >> "/home/${SSH_USER}/.ssh/authorized_keys"
     chown -R "${SSH_USER}:${SSH_USER}" "/home/${SSH_USER}/.ssh"
     chmod 700 "/home/${SSH_USER}/.ssh"
     chmod 600 "/home/${SSH_USER}/.ssh/authorized_keys"
-    log "Utilisateur SSH ${SSH_USER} créé avec clé publique"
+    log "Utilisateur SSH ${SSH_USER} créé avec mot de passe et ajouté au groupe sudo"
 else
     log "Utilisateur SSH ${SSH_USER} existe déjà"
 fi
