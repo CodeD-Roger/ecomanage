@@ -4,7 +4,7 @@ Le script **ecomanage.sh** prépare l’environnement nécessaire.
 
 Il effectue les actions suivantes :
 
-- **📦 Installation d'ERPNext via Docker.**
+- **📦 Installation d'un ERP.**
 - **🔒 Configuration de SSH pour l'authentification par clé.**
 - **🔑 Génération d’une clé SSH pour un accès sécurisé.**
 
@@ -12,7 +12,7 @@ Il effectue les actions suivantes :
 
 ## 🎯 Fonctionnalités principales
 
-- **📦 Installation automatique d'ERPNext (via Docker).**
+- **📦 Installation automatique d'un ERP.**
 - **🔐 Sécurisation du serveur SSH avec clé  Ed25519.**
 - **🔑 Génération et sauvegarde de la clé SSH pour un accès distant sécurisé.**
 
