@@ -2,7 +2,6 @@
 
 # Script d'installation d'Odoo 18 sur Ubuntu
 # Idempotent, automatisé, sans interaction
-
 # Exit en cas d'erreur (sauf pour certaines commandes)
 set -e
 
@@ -82,6 +81,11 @@ apt install -y \
     fonts-liberation \
     libldap2-dev libsasl2-dev \
     openssh-server
+
+# Activer le service SSH pour démarrer au boot
+SSH_SERVICE=$(get_ssh_service_name)
+systemctl enable "${SSH_SERVICE}"
+log "Service SSH (${SSH_SERVICE}) activé pour démarrer au boot"
 
 npm install -g rtlcss
 
@@ -207,6 +211,16 @@ else
     log "Utilisateur SSH ${SSH_USER} existe déjà"
 fi
 
+# Vérification de la présence d'une clé publique dans authorized_keys
+AUTHORIZED_KEYS="/home/${SSH_USER}/.ssh/authorized_keys"
+if [ ! -s "${AUTHORIZED_KEYS}" ]; then
+    log "⚠️ Erreur : Aucune clé publique trouvée dans ${AUTHORIZED_KEYS}. L'authentification par mot de passe sera conservée pour éviter un verrouillage SSH."
+    SSH_AUTH_METHOD="PasswordAuthentication yes"
+else
+    log "Clé publique détectée dans ${AUTHORIZED_KEYS}. Désactivation de l'authentification par mot de passe."
+    SSH_AUTH_METHOD="PasswordAuthentication no"
+fi
+
 if [ -f "/etc/ssh/sshd_config" ]; then
     if [ ! -f "/etc/ssh/sshd_config.bak" ]; then
         cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
@@ -222,7 +236,7 @@ Port 22
 Protocol 2
 HostKey /etc/ssh/ssh_host_ed25519_key
 PermitRootLogin no
-PasswordAuthentication no
+${SSH_AUTH_METHOD}
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
 KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org
@@ -261,7 +275,7 @@ $(systemctl is-active "${ODOO_SERVICE}" | grep -q "active" && echo "Actif" || ec
 🎉 Odoo ${ODOO_VERSION} est prêt à l'utilisation !
 Connectez-vous via l'URL ci-dessus et configurez votre instance Odoo.
 
-⚠️ Sauv
-egardez la clé privée SSH (${SSH_PRIVATE_KEY}) dans un endroit sûr !
+⚠️ Sauvegardez la clé privée SSH (${SSH_PRIVATE_KEY}) dans un endroit sûr !
+$([ ! -s "${AUTHORIZED_KEYS}" ] && echo -e "\n⚠️ ATTENTION : Aucune clé publique dans ${AUTHORIZED_KEYS}. L'authentification par mot de passe est activée pour éviter un verrouillage SSH.")
 
 EOF
