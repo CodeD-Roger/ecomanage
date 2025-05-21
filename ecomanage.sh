@@ -64,8 +64,15 @@ check_apt_sources
 # ------------------- 1. Mise à jour & dépendances -------------------
 log "Mise à jour du système et installation des dépendances"
 
+# Désactiver temporairement le redémarrage automatique de SSH
+SSH_SERVICE=$(get_ssh_service_name)
+log "Désactivation temporaire du service SSH (${SSH_SERVICE}) pour éviter les redémarrages automatiques"
+systemctl mask "${SSH_SERVICE}" || log "Erreur lors de la désactivation temporaire de ${SSH_SERVICE}, continuation..."
+
 apt update -y || log "Erreur lors de apt update, continuation..."
+log "Étape : apt update terminé"
 apt upgrade -y
+log "Étape : apt upgrade terminé"
 
 apt install -y \
     python3 python3-venv python3-dev python3-pip \
@@ -81,13 +88,16 @@ apt install -y \
     fonts-liberation \
     libldap2-dev libsasl2-dev \
     openssh-server
+log "Étape : Installation des dépendances terminée"
 
-# Activer le service SSH pour démarrer au boot
-SSH_SERVICE=$(get_ssh_service_name)
+# Réactiver le service SSH après les mises à jour
+log "Réactivation du service SSH (${SSH_SERVICE})"
+systemctl unmask "${SSH_SERVICE}" || log "Erreur lors de la réactivation de ${SSH_SERVICE}, continuation..."
 systemctl enable "${SSH_SERVICE}"
 log "Service SSH (${SSH_SERVICE}) activé pour démarrer au boot"
 
 npm install -g rtlcss
+log "Étape : Installation de rtlcss terminée"
 
 # ------------------- 2. Installation d'Odoo 18 -------------------
 log "Configuration de l'utilisateur et installation d'Odoo ${ODOO_VERSION}"
@@ -103,6 +113,7 @@ fi
 log "Configuration de PostgreSQL"
 systemctl enable postgresql
 systemctl start postgresql
+log "Étape : Démarrage de PostgreSQL terminé"
 
 # Création de l'utilisateur PostgreSQL (idempotent)
 if ! su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='${ODOO_USER}'\" | grep -q 1" 2>/dev/null; then
@@ -112,6 +123,7 @@ else
     log "Utilisateur PostgreSQL ${ODOO_USER} existe déjà"
 fi
 su - postgres -c "psql -c \"ALTER USER ${ODOO_USER} WITH ENCRYPTED PASSWORD '${ODOO_DB_PASSWORD}'\""
+log "Étape : Configuration de l'utilisateur PostgreSQL terminée"
 
 # Clonage du dépôt Odoo (idempotent)
 if [ ! -d "${ODOO_HOME}/odoo" ]; then
@@ -121,6 +133,7 @@ if [ ! -d "${ODOO_HOME}/odoo" ]; then
 else
     log "Dépôt Odoo déjà présent dans ${ODOO_HOME}/odoo"
 fi
+log "Étape : Clonage du dépôt Odoo terminé"
 
 # Configuration de l'environnement virtuel
 log "Configuration de l'environnement virtuel Python"
@@ -136,6 +149,7 @@ if [ ! -d "${ODOO_HOME}/venv" ]; then
 else
     log "Environnement virtuel déjà configuré"
 fi
+log "Étape : Configuration de l'environnement virtuel terminée"
 
 mkdir -p "${LOG_DIR}"
 chown "${ODOO_USER}:${ODOO_USER}" "${LOG_DIR}"
@@ -155,6 +169,7 @@ http_port = ${ODOO_PORT}
 EOF
 chown "${ODOO_USER}:${ODOO_USER}" "${ODOO_CONF}"
 chmod 640 "${ODOO_CONF}"
+log "Étape : Création du fichier de configuration Odoo terminée"
 
 log "Création du service systemd ${ODOO_SERVICE}"
 cat > "/etc/systemd/system/${ODOO_SERVICE}.service" << EOF
@@ -177,7 +192,7 @@ EOF
 systemctl daemon-reload
 systemctl enable "${ODOO_SERVICE}"
 systemctl restart "${ODOO_SERVICE}"
-log "Service ${ODOO_SERVICE} démarré"
+log "Étape : Création et démarrage du service Odoo terminée"
 
 # ------------------- 3. Sécurisation SSH -------------------
 log "Sécurisation de la configuration SSH"
@@ -198,6 +213,19 @@ if [ ! -f "${SSH_PRIVATE_KEY}" ]; then
     log "Clé SSH ED25519 générée : ${SSH_PUBLIC_KEY}"
 else
     log "Clé SSH ED25519 déjà existante : ${SSH_PUBLIC_KEY}"
+fi
+
+# Ajouter la clé publique de l'utilisateur actuel pour éviter la déconnexion
+CURRENT_SSH_USER=$(whoami)
+if [ -f "/home/${CURRENT_SSH_USER}/.ssh/id_rsa.pub" ]; then
+    mkdir -p "/home/${SSH_USER}/.ssh"
+    cat "/home/${CURRENT_SSH_USER}/.ssh/id_rsa.pub" >> "/home/${SSH_USER}/.ssh/authorized_keys"
+    chown -R "${SSH_USER}:${SSH_USER}" "/home/${SSH_USER}/.ssh"
+    chmod 700 "/home/${SSH_USER}/.ssh"
+    chmod 600 "/home/${SSH_USER}/.ssh/authorized_keys"
+    log "Clé publique de ${CURRENT_SSH_USER} ajoutée à ${AUTHORIZED_KEYS}"
+else
+    log "Aucune clé publique trouvée pour ${CURRENT_SSH_USER}, l'authentification par mot de passe sera conservée"
 fi
 
 if ! id "${SSH_USER}" >/dev/null 2>&1; then
@@ -245,7 +273,10 @@ else
     log "Aucun fichier /etc/ssh/sshd_config trouvé, création d'un nouveau fichier"
 fi
 
-cat > /etc/ssh/sshd_config << EOF
+# Écrire la configuration SSH dans un fichier temporaire pour éviter un rechargement automatique
+log "Écriture de la configuration SSH dans un fichier temporaire"
+TEMP_SSH_CONFIG="/tmp/sshd_config_temp"
+cat > "${TEMP_SSH_CONFIG}" << EOF
 # Configuration SSH sécurisée pour Odoo
 Port 22
 Protocol 2
@@ -261,9 +292,7 @@ ChallengeResponseAuthentication no
 UsePAM yes
 Subsystem sftp /usr/lib/openssh/sftp-server
 EOF
-
-systemctl restart "${SSH_SERVICE}"
-log "Service SSH (${SSH_SERVICE}) redémarré avec configuration sécurisée"
+log "Étape : Création du fichier de configuration SSH temporaire terminée"
 
 # ------------------- 4. Affichage final -------------------
 log "Installation terminée avec succès !"
@@ -294,3 +323,21 @@ Connectez-vous via l'URL ci-dessus et configurez votre instance Odoo.
 $([ ! -s "${AUTHORIZED_KEYS}" ] && echo -e "\n⚠️ ATTENTION : Aucune clé publique dans ${AUTHORIZED_KEYS}. L'authentification par mot de passe est activée pour éviter un verrouillage SSH.")
 
 EOF
+
+# ------------------- 5. Application de la configuration SSH et délai -------------------
+log "Application de la configuration SSH"
+mv "${TEMP_SSH_CONFIG}" /etc/ssh/sshd_config
+chown root:root /etc/ssh/sshd_config
+chmod 644 /etc/ssh/sshd_config
+log "Étape : Configuration SSH appliquée"
+
+log "⚠️ ATTENTION : Vous avez 300 secondes (5 minutes) pour copier la clé privée SSH (${SSH_PRIVATE_KEY}) avant la demande de redémarrage du service SSH."
+sleep 300
+log "Veuillez taper 'RESTART' pour redémarrer le service SSH (${SSH_SERVICE}) et appliquer la configuration sécurisée :"
+read -r user_input
+if [ "$user_input" = "RESTART" ]; then
+    log "Redémarrage du service SSH (${SSH_SERVICE}) pour appliquer la configuration sécurisée"
+    systemctl restart "${SSH_SERVICE}"
+else
+    log "Redémarrage du service SSH annulé. Veuillez redémarrer manuellement avec 'systemctl restart ${SSH_SERVICE}' si nécessaire."
+fi
