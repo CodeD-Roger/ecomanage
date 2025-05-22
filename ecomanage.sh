@@ -69,6 +69,7 @@ SSH_SERVICE=$(get_ssh_service_name)
 log "Désactivation temporaire du service SSH (${SSH_SERVICE}) pour éviter les redémarrages automatiques"
 systemctl mask "${SSH_SERVICE}" || log "Erreur lors de la désactivation temporaire de ${SSH_SERVICE}, continuation..."
 
+export NEEDRESTART_MODE=a  # Prevent needrestart from restarting services
 apt update -y || log "Erreur lors de apt update, continuation..."
 log "Étape : apt update terminé"
 apt upgrade -y
@@ -322,22 +323,33 @@ Connectez-vous via l'URL ci-dessus et configurez votre instance Odoo.
 ⚠️ Sauvegardez la clé privée SSH (${SSH_PRIVATE_KEY}) dans un endroit sûr !
 $([ ! -s "${AUTHORIZED_KEYS}" ] && echo -e "\n⚠️ ATTENTION : Aucune clé publique dans ${AUTHORIZED_KEYS}. L'authentification par mot de passe est activée pour éviter un verrouillage SSH.")
 
+⚠️ N'oubliez pas de redémarrer le service SSH pour appliquer la configuration sécurisée une fois la clé privée copiée :
+   - Commande : systemctl restart ${SSH_SERVICE}
+
 EOF
 
-# ------------------- 5. Application de la configuration SSH et délai -------------------
+# ------------------- 5. Application de la configuration SSH -------------------
 log "Application de la configuration SSH"
 mv "${TEMP_SSH_CONFIG}" /etc/ssh/sshd_config
 chown root:root /etc/ssh/sshd_config
 chmod 644 /etc/ssh/sshd_config
 log "Étape : Configuration SSH appliquée"
 
-log "⚠️ ATTENTION : Vous avez 300 secondes (5 minutes) pour copier la clé privée SSH (${SSH_PRIVATE_KEY}) avant la demande de redémarrage du service SSH."
-sleep 300
-log "Veuillez taper 'RESTART' pour redémarrer le service SSH (${SSH_SERVICE}) et appliquer la configuration sécurisée :"
-read -r user_input
-if [ "$user_input" = "RESTART" ]; then
-    log "Redémarrage du service SSH (${SSH_SERVICE}) pour appliquer la configuration sécurisée"
-    systemctl restart "${SSH_SERVICE}"
+# Vérification et commentaire de PasswordAuthentication yes dans /etc/ssh/sshd_config.d/
+log "Vérification des fichiers dans /etc/ssh/sshd_config.d/ pour PasswordAuthentication yes"
+if [ -d "/etc/ssh/sshd_config.d/" ]; then
+    for file in /etc/ssh/sshd_config.d/*.conf; do
+        if [ -f "$file" ] && grep -q "^[^#]*PasswordAuthentication yes" "$file"; then
+            log "Commentaire de 'PasswordAuthentication yes' dans $file"
+            sed -i 's/^\(PasswordAuthentication yes\)/# \1/' "$file"
+        fi
+    done
 else
-    log "Redémarrage du service SSH annulé. Veuillez redémarrer manuellement avec 'systemctl restart ${SSH_SERVICE}' si nécessaire."
+    log "Aucun répertoire /etc/ssh/sshd_config.d/ trouvé, aucune modification nécessaire"
 fi
+log "Étape : Vérification et correction des fichiers sshd_config.d terminée"
+
+# Redémarrer le service SSH pour appliquer les modifications
+log "Redémarrage du service SSH (${SSH_SERVICE})"
+systemctl restart "${SSH_SERVICE}" || log "Erreur lors du redémarrage de ${SSH_SERVICE}, vérifiez manuellement"
+log "Étape : Redémarrage du service SSH terminée"
