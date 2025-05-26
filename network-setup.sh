@@ -386,7 +386,7 @@ fi
 echo -e "${GREEN}🔒 Configuring UFW firewall...${NC}"
 check_command ufw
 if [ "$DRY_RUN" = true ]; then
-    echo -e "${YELLOW}Dry-run: Would configure UFW to allow ports 22 (SSH), 80 (HTTP), 443 (HTTPS), 53 (DNS), 61905/udp (WireGuard), 10000/tcp (Webmin).${NC}"
+    echo -e "${YELLOW}Dry-run: Would configure UFW to allow ports 22 (SSH), 80 (HTTP), 443 (HTTPS), 53 (DNS), 61905/udp (WireGuard), 8069 (Odoo), 10000/tcp (Webmin).${NC}"
 else
     # Reset UFW to avoid duplicate rules
     ufw --force reset
@@ -398,8 +398,9 @@ else
     ufw allow 443/tcp comment "HTTPS"
     ufw allow 53 comment "DNS"
     ufw allow 61905/udp comment "WireGuard VPN"
+    ufw allow 8069 comment "Odoo"
     ufw allow 10000/tcp comment "Webmin"
-    echo -e "${GREEN}✅ Ports 22 (SSH), 80 (HTTP), 443 (HTTPS), 53 (DNS), 61905/udp (WireGuard), and 10000/tcp (Webmin) allowed.${NC}"
+    echo -e "${GREEN}✅ Ports 22 (SSH), 80 (HTTP), 443 (HTTPS), 53 (DNS), 61905/udp (WireGuard), 8069 (Odoo), and 10000/tcp (Webmin) allowed.${NC}"
 
     # Set default policies
     ufw default deny incoming
