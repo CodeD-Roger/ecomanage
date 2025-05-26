@@ -41,4 +41,4 @@ sudo ./network-setup.sh
 ### 1️⃣ Cloner le dépôt
 ```bash
 sudo chmod +x vpn.sh
-sudo vpn.sh
+sudo ./vpn.sh
