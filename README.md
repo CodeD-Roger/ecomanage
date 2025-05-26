@@ -26,4 +26,19 @@ git clone https://github.com/CodeD-Roger/ecomanage.git
 cd ecomanage
 sudo chmod +x ecomanage.sh
 sudo ./ecomanage.sh
+```
 
+## 🚀 Configuration du DNS local, HTTPS, pare-feu, Webmin 
+
+### 1️⃣ Cloner le dépôt
+```bash
+sudo chmod +x network-setup.sh
+sudo ./network-setup.sh
+```
+
+## 🚀 Installe et configure un serveur VPN WireGuard
+
+### 1️⃣ Cloner le dépôt
+```bash
+sudo chmod +x vpn.sh
+sudo vpn.sh
